@@ -25,14 +25,18 @@ def get_data(data_type):
         y = torch.cat((y, y_i))        
     return X / 255.0, y
 
-def draw_weights(synapses, n_cols, n_rows, text=None):
-    fig=plt.figure(figsize=(12.9,10))
-    yy=0
-    HM=np.zeros((28*n_rows,28*n_cols))
-    for y in range(n_rows):
-        for x in range(n_cols):
-            HM[y*28:(y+1)*28,x*28:(x+1)*28]=synapses[yy,:].reshape(28,28)
-            yy += 1
+def weights_to_conv_activations(weights, sz=28):
+    pass
+
+def draw_weights(weights, n_cols, n_rows, sz=28, text=None):
+    weights = weights.reshape((-1, sz, sz))
+    indexes = np.random.randint(0, len(weights), n_cols*n_rows)
+    weights = weights[indexes]
+    fig=plt.figure(figsize=(10, 6))    
+    HM=np.zeros((sz*n_rows,sz*n_cols))
+    for idx in range(n_cols * n_rows):
+        x, y = idx % n_cols, idx // n_cols
+        HM[y*sz:(y+1)*sz,x*sz:(x+1)*sz]=weights[idx]
     plt.clf()
     nc=np.amax(np.absolute(HM))
     im=plt.imshow(HM, cmap='bwr', vmin=-nc, vmax=nc)
@@ -151,3 +155,17 @@ class SimpleBioClassifier(nn.Module):
     def forward(self, vᵢ):
         Wᵤᵢvᵢ = F.linear(vᵢ, self.Wᵤᵢ, None)        
         return  F.log_softmax(self.out(Wᵤᵢvᵢ), dim=-1)
+
+class BioConvClassifier(nn.Module):
+    def __init__(self, Wᵤᵢ, out_features):
+        super().__init__()
+        self.conv = nn.Conv2d(1, 2000, (28, 28))
+        self.conv.weight.data = Wᵤᵢ.view((-1, 1, 28, 28))
+        self.conv.requires_grad = False
+        self.out = nn.Linear(Wᵤᵢ.size(0), out_features, bias=False)
+        
+    def forward(self, vᵢ):
+        x = vᵢ.view(len(vᵢ), 1, 28, 28)
+        x = self.conv(x).view(len(vᵢ), -1)
+        x = self.out(x)
+        return x
