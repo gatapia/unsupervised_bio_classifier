@@ -22,11 +22,8 @@ def get_data(data_type):
         X_i = torch.from_numpy(mat[data_type + str(i)].astype(np.float)).float()
         X = torch.cat((X, X_i))
         y_i = torch.full(size=(len(X_i),), fill_value=i, dtype=torch.long)
-        y = torch.cat((y, y_i))        
+        y = torch.cat((y, y_i))
     return X / 255.0, y
-
-def weights_to_conv_activations(weights, sz=28):
-    pass
 
 def draw_weights(weights, n_cols, n_rows, sz=28, text=None):
     weights = weights.reshape((-1, sz, sz))
@@ -76,18 +73,20 @@ def get_unsupervised_weights(X, n_hidden, n_epochs, batch_size,
             weights += eps*(ds/nc)
     return weights
 
-def run_test(train_X, train_y, test_X, test_y, model, epochs, lr=1e-2):
+def run_test(train_X, train_y, test_X, test_y, model, epochs, lr=1e-3, verbose=0, loss=None):
     train_ds = TensorDataset(train_X, train_y)
     train_dl = DataLoader(train_ds, batch_size=64, shuffle=True)
     test_ds = TensorDataset(test_X, test_y)
     test_dl = DataLoader(test_ds, batch_size=64, shuffle=False)
         
     optimizer = Adam(model.parameters(), lr=lr)
-    trainer = create_supervised_trainer(model, optimizer, F.nll_loss, device='cuda')
-    evaluator = create_supervised_evaluator(model, metrics={'accuracy': Accuracy(), 'nll': Loss(F.nll_loss)}, device='cuda')
-
+    if loss is None: loss = F.nll_loss
+    trainer = create_supervised_trainer(model, optimizer, loss, device='cuda')
+    evaluator = create_supervised_evaluator(model, metrics={'accuracy': Accuracy(), 'nll': Loss(loss)}, device='cuda')
+    
     @trainer.on(Events.EPOCH_COMPLETED)
     def log_training_results(engine):
+        if verbose <= 1: return
         evaluator.run(train_dl)
         metrics = evaluator.state.metrics
         avg_accuracy = metrics['accuracy']
@@ -96,11 +95,20 @@ def run_test(train_X, train_y, test_X, test_y, model, epochs, lr=1e-2):
 
     @trainer.on(Events.EPOCH_COMPLETED)
     def log_validation_results(engine):
+        if verbose == 0: return
         evaluator.run(test_dl)
         metrics = evaluator.state.metrics
         avg_accuracy = metrics['accuracy']
         avg_nll = metrics['nll']
         print("Validation Results - Epoch: {}  Avg accuracy: {:.2f} Avg loss: {:.2f}".format(engine.state.epoch, avg_accuracy, avg_nll))
+
+    @trainer.on(Events.COMPLETED)
+    def log_completed_validation_results(engine):
+        evaluator.run(test_dl)
+        metrics = evaluator.state.metrics
+        avg_accuracy = metrics['accuracy']
+        avg_nll = metrics['nll']
+        print("Final Validation Results - Epoch: {}  Avg accuracy: {:.2f} Avg loss: {:.2f}".format(engine.state.epoch, avg_accuracy, avg_nll))
 
     trainer.run(train_dl, max_epochs=epochs) 
 
@@ -137,6 +145,51 @@ class BioCell(nn.Module):
         cₐ = torch.tanh(self.β * Sₐᵤ)
         return cₐ
 
+class BioCell2(nn.Module):
+    def __init__(self, Wᵤᵢ, β=.1, out_features=10):
+        super().__init__()
+        # Wᵤᵢ is the unsupervised pretrained weight matrix of shape: (2000, 28*28)        
+        self.Wᵤᵢ = Wᵤᵢ.transpose(0, 1)
+        self.β = β
+        self.supervised = nn.Linear(Wᵤᵢ.size(0), out_features, bias=False)
+        
+    def forward(self, vᵢ):        
+        Wᵤᵢvᵢ = torch.matmul(vᵢ, self.Wᵤᵢ)
+        hᵤ = F.relu(Wᵤᵢvᵢ)
+        Sₐᵤ = self.supervised(hᵤ)
+        cₐ = torch.tanh(self.β * Sₐᵤ)
+        return cₐ
+
+class BioCell3(nn.Module):
+    # Wᵤᵢ is the unsupervised pretrained weight matrix of shape: (2000, 28*28)
+    def __init__(self, Wᵤᵢ, n=4.5, β=.01, out_features=10):
+        super().__init__()
+        self.Wᵤᵢ = Wᵤᵢ.transpose(0, 1) # (768, 2000)
+        self.n = n
+        self.β = β
+        # self.Sₐᵤ = nn.Parameter(torch.Tensor(Wᵤᵢ.size(0), out_features))
+        self.Sₐᵤ = nn.Linear(Wᵤᵢ.size(0), out_features, bias=False)
+        
+    def forward(self, vᵢ):
+        vᵢ = vᵢ.view(-1, 28, 28).transpose(1, 2).contiguous().view(-1, 28*28) # change vᵢ to be HxW for testing
+        Wᵤᵢvᵢ = torch.matmul(vᵢ, self.Wᵤᵢ)
+        hᵤ = F.relu(Wᵤᵢvᵢ) ** self.n
+        Sₐᵤhᵤ = self.Sₐᵤ(hᵤ)
+        cₐ = torch.tanh(self.β * Sₐᵤhᵤ)
+        return cₐ
+
+class BioLoss(nn.Module):
+    def __init__(self, m=6):
+        super().__init__()
+        self.m = m
+
+    def forward(self, cₐ, tₐ): 
+        tₐ_ohe = torch.eye(10, dtype=torch.float, device='cuda')[tₐ]
+        tₐ_ohe[tₐ_ohe==0] = -1.        
+        loss = (cₐ - tₐ_ohe).abs() ** self.m
+        return loss.sum()
+
+
 class BioClassifier(nn.Module):
     def __init__(self, bio):
         super().__init__()
@@ -156,16 +209,48 @@ class SimpleBioClassifier(nn.Module):
         Wᵤᵢvᵢ = F.linear(vᵢ, self.Wᵤᵢ, None)        
         return  F.log_softmax(self.out(Wᵤᵢvᵢ), dim=-1)
 
-class BioConvClassifier(nn.Module):
-    def __init__(self, Wᵤᵢ, out_features):
+class BioConvLayer(nn.Module):
+    def __init__(self, Wᵤᵢ):
         super().__init__()
-        self.conv = nn.Conv2d(1, 2000, (28, 28))
-        self.conv.weight.data = Wᵤᵢ.view((-1, 1, 28, 28))
-        self.conv.requires_grad = False
-        self.out = nn.Linear(Wᵤᵢ.size(0), out_features, bias=False)
+
+        self.conv = nn.Conv2d(1, 2000, 28)
+        self.conv.weight.data = Wᵤᵢ.view((-1, 1, 28, 28))        
+        self.conv.weight.requires_grad = False
         
     def forward(self, vᵢ):
         x = vᵢ.view(len(vᵢ), 1, 28, 28)
-        x = self.conv(x).view(len(vᵢ), -1)
+        x = self.conv(x)        
+        return x
+
+class BioConvClassifier(nn.Module):
+    def __init__(self, Wᵤᵢ, out_features):
+        super().__init__()
+        self.conv = BioConvLayer(Wᵤᵢ)
+        self.out = nn.Linear(Wᵤᵢ.size(0), out_features, bias=False)
+        
+    def forward(self, vᵢ):
+        x = self.conv(vᵢ)
+        x = x.view(len(vᵢ), -1)
         x = self.out(x)
         return x
+        
+
+class BioConvClassifier2(nn.Module):
+    def __init__(self, Wᵤᵢ):
+        super().__init__()
+        self.conv1 = BioConvLayer(Wᵤᵢ)
+        self.conv2 = nn.Conv2d(2000, 256, 1)
+        self.conv2_drop = nn.Dropout2d()
+        self.fc1 = nn.Linear(256, 1024)
+        self.fc2 = nn.Linear(1024, 10)
+
+    def forward(self, x): # 64, 784
+        x = self.conv1(x) # 64, 2000, 1, 1
+        x = F.relu(F.max_pool2d(x, 2)) # 64, 2000, 1, 1
+        x = self.conv2(x) # 64, 256, 1, 1
+        x = F.relu(F.max_pool2d(self.conv2_drop(x), 2)) # 64, 256, 1, 1
+        x = x.squeeze() # 64, 256
+        x = F.relu(self.fc1(x))
+        x = F.dropout(x, training=self.training)
+        x = self.fc2(x)
+        return F.log_softmax(x, dim=-1)

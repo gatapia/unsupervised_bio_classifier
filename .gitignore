@@ -1,0 +1,12 @@
+data/
+logs/
+.idea/
+build/
+__pycache__/
+cache/
+src/.ipynb_checkpoints/
+output.log
+*.pyc
+*.so
+*.c
+*.hdf5
