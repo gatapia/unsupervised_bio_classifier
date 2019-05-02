@@ -45,12 +45,10 @@ def draw_weights(weights, n_cols, n_rows, sz=28, text=None):
 def get_unsupervised_weights(X, n_hidden, n_epochs, batch_size, 
         learning_rate=2e-2, precision=1e-30, anti_hebbian_learning_strength=0.4, lebesgue_norm=2.0, rank=2):
     sample_sz = X.shape[1]
-    weights = np.random.normal(0., 1., (n_hidden, sample_sz))
-    # weights = torch.rand((n_hidden, sample_sz), dtype=torch.float).cuda()
-    weights = torch.from_numpy(weights).float().cuda()
+    weights = torch.rand((n_hidden, sample_sz), dtype=torch.float, device='cuda')
     for epoch in range(n_epochs):    
         eps = learning_rate * (1 - epoch / n_epochs)
-        shuffled_epoch_data = X[np.random.permutation(X.shape[0]),:]    
+        shuffled_epoch_data = X[torch.randperm(X.shape[0]),:]
         for i in range(X.shape[0] // batch_size):
             mini_batch = shuffled_epoch_data[i*batch_size:(i+1)*batch_size,:].cuda()            
             mini_batch = torch.transpose(mini_batch, 0, 1)            
