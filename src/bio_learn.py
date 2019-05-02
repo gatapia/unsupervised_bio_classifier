@@ -73,11 +73,12 @@ def get_unsupervised_weights(X, n_hidden, n_epochs, batch_size,
             weights += eps*(ds/nc)
     return weights
 
-def run_test(train_X, train_y, test_X, test_y, model, epochs, lr=1e-3, verbose=0, loss=None):
+def run_test(train_X, train_y, test_X, test_y, model, epochs, batch_size=64, lr=1e-3, verbose=0, loss=None):
+    start = time()
     train_ds = TensorDataset(train_X, train_y)
-    train_dl = DataLoader(train_ds, batch_size=64, shuffle=True)
+    train_dl = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
     test_ds = TensorDataset(test_X, test_y)
-    test_dl = DataLoader(test_ds, batch_size=64, shuffle=False)
+    test_dl = DataLoader(test_ds, batch_size=batch_size, shuffle=False)
         
     optimizer = Adam(model.parameters(), lr=lr)
     if loss is None: loss = F.nll_loss
@@ -108,7 +109,7 @@ def run_test(train_X, train_y, test_X, test_y, model, epochs, lr=1e-3, verbose=0
         metrics = evaluator.state.metrics
         avg_accuracy = metrics['accuracy']
         avg_nll = metrics['nll']
-        print("Final Validation Results - Epoch: {}  Avg accuracy: {:.2f} Avg loss: {:.2f}".format(engine.state.epoch, avg_accuracy, avg_nll))
+        print("Final Validation Results - Epoch: {}  Avg accuracy: {:.2f} Avg loss: {:.2f} Took: {:.0f}s".format(engine.state.epoch, avg_accuracy, avg_nll, time() - start))
 
     trainer.run(train_dl, max_epochs=epochs) 
 
@@ -171,7 +172,7 @@ class BioCell3(nn.Module):
         self.Sₐᵤ = nn.Linear(Wᵤᵢ.size(0), out_features, bias=False)
         
     def forward(self, vᵢ):
-        vᵢ = vᵢ.view(-1, 28, 28).transpose(1, 2).contiguous().view(-1, 28*28) # change vᵢ to be HxW for testing
+        # vᵢ = vᵢ.view(-1, 28, 28).transpose(1, 2).contiguous().view(-1, 28*28) # change vᵢ to be HxW for testing
         Wᵤᵢvᵢ = torch.matmul(vᵢ, self.Wᵤᵢ)
         hᵤ = F.relu(Wᵤᵢvᵢ) ** self.n
         Sₐᵤhᵤ = self.Sₐᵤ(hᵤ)
