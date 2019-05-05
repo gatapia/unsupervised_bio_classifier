@@ -1,4 +1,4 @@
-import scipy.io
+import scipy.io, os
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -7,12 +7,17 @@ from time import time
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.tensorboard import SummaryWriter
 
 from torch.utils.data import TensorDataset, DataLoader
 from torch.optim import Adam
 
 from ignite.engine import Events, create_supervised_trainer, create_supervised_evaluator
 from ignite.metrics import Accuracy, Loss
+
+experiment = os.path.abspath(os.curdir).split('/')[-1]
+tb_logs_dir = f'../data/logs/{experiment}_tb_logs'
+tb = SummaryWriter(tb_logs_dir)
 
 def get_data(data_type):
     mat = scipy.io.loadmat('mnist_all.mat')
@@ -26,7 +31,7 @@ def get_data(data_type):
     return X / 255.0, y
 
 def draw_unsupervised_weights(weights, n_cols, n_rows, img_sz, text=None):
-    weights = weights.reshape((-1, img_sz, img_sz))
+    weights = weights.cpu().numpy().reshape((-1, img_sz, img_sz))
     indexes = np.random.randint(0, len(weights), n_cols*n_rows)
     weights = weights[indexes]
     fig=plt.figure(figsize=(10, 6))    
@@ -40,7 +45,8 @@ def draw_unsupervised_weights(weights, n_cols, n_rows, img_sz, text=None):
     fig.colorbar(im,ticks=[np.amin(HM), 0, np.amax(HM)])
     if text is not None: plt.title(text)
     plt.axis('off')
-    fig.canvas.draw()   
+    fig.canvas.draw()
+    return fig
 
 def get_unsupervised_weights(X, n_hidden, n_epochs, batch_size, 
         learning_rate=2e-2, precision=1e-30, anti_hebbian_learning_strength=0.4, lebesgue_norm=2.0, rank=2):
@@ -82,11 +88,26 @@ def run_test(train_X, train_y, test_X, test_y, model, epochs, loss, batch_size=6
     trainer = create_supervised_trainer(model, optimizer, loss, device='cuda')
     evaluator = create_supervised_evaluator(model, metrics={'accuracy': Accuracy(), 'loss': Loss(loss)}, device='cuda')
     
-    @trainer.on(Events.COMPLETED)
-    def log_completed_validation_results(engine):
+    @trainer.on(Events.EPOCH_COMPLETED)
+    def log_epoch(trainer):
+        evaluator.run(train_dl)
+        metrics = evaluator.state.metrics
+        tb.add_scalar('train loss', metrics['loss'], trainer.state.epoch)
+        tb.add_scalar('train accuracy', metrics['accuracy'], trainer.state.epoch)
+        tb.add_scalar('train/loss', metrics['loss'], trainer.state.epoch)
+        tb.add_scalar('train/accuracy', metrics['accuracy'], trainer.state.epoch)
+
         evaluator.run(test_dl)
-        avg_accuracy = evaluator.state.metrics['accuracy']
-        print("Final Accuracy: {:.2f} Took: {:.0f}s".format(avg_accuracy, time() - start))
+        metrics = evaluator.state.metrics
+        tb.add_scalar('test loss', metrics['loss'], trainer.state.epoch)
+        tb.add_scalar('test accuracy', metrics['accuracy'], trainer.state.epoch)
+        tb.add_scalar('test/loss', metrics['loss'], trainer.state.epoch)
+        tb.add_scalar('test/accuracy', metrics['accuracy'], trainer.state.epoch)
+
+    @trainer.on(Events.COMPLETED)
+    def log_complete(engine):
+        evaluator.run(test_dl)        
+        print("Final Accuracy: {:.2f} Took: {:.0f}s".format(evaluator.state.metrics['accuracy'], time() - start))
 
     trainer.run(train_dl, max_epochs=epochs) 
 
@@ -118,7 +139,7 @@ class BioClassifier(nn.Module):
         self.β = β
         self.Sₐᵤ = nn.Linear(Wᵤᵢ.size(0), out_features, bias=False)
         
-    def forward(self, vᵢ):
+    def forward(self, vᵢ): # vᵢ: (batch_sz, img_sz)
         Wᵤᵢvᵢ = torch.matmul(vᵢ, self.Wᵤᵢ)
         hᵤ = F.relu(Wᵤᵢvᵢ) ** self.n
         Sₐᵤhᵤ = self.Sₐᵤ(hᵤ)
